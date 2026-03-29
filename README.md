@@ -10,6 +10,7 @@ Dexter is an autonomous financial research agent that thinks, plans, and learns 
 - [✅ Prerequisites](#-prerequisites)
 - [💻 How to Install](#-how-to-install)
 - [🚀 How to Run](#-how-to-run)
+- [🦀 OpenClaw Onboarding](#-openclaw-onboarding)
 - [📊 How to Evaluate](#-how-to-evaluate)
 - [🐛 How to Debug](#-how-to-debug)
 - [📱 How to Use with WhatsApp](#-how-to-use-with-whatsapp)
@@ -118,6 +119,134 @@ Or with watch mode for development:
 ```bash
 bun dev
 ```
+
+## 🦀 OpenClaw Onboarding
+
+Dexter now supports a non-interactive portfolio-analysis CLI intended for OpenClaw and other automation. The contract is JSON to stdout.
+
+### 1. Prepare a local portfolio registry
+
+Start from the tracked example:
+```bash
+cp .dexter/portfolios.example.json .dexter/portfolios.json
+```
+
+Then edit `.dexter/portfolios.json` with your real portfolios.
+
+Notes:
+- `.dexter/portfolios.json` is intentionally ignored by git so private holdings stay local
+- `.dexter/portfolios.example.json` is the safe template tracked by the repo
+
+### 2. Choose a model/provider
+
+Portfolio analysis requires a tool-capable provider because it depends on live financial/news/filing data.
+
+Supported examples:
+- OpenAI: `gpt-5.4`
+- Moonshot Kimi: `kimi-k2-5`
+
+Examples:
+```bash
+# Use provider default model
+bun run src/index.tsx portfolio run core-us --json --provider moonshot
+
+# Use an explicit model and infer provider
+bun run src/index.tsx portfolio run core-us --json --model kimi-k2-5
+```
+
+Do not use the `Codex` provider for portfolio-analysis runs. The current Codex integration in Dexter is tool-free and is rejected for this workflow.
+
+### 3. Validate the portfolio config
+
+```bash
+bun run src/index.tsx portfolio validate --json
+```
+
+### 4. List available portfolios
+
+```bash
+bun run src/index.tsx portfolio list --json
+```
+
+### 5. Run one portfolio
+
+```bash
+bun run src/index.tsx portfolio run core-us --json
+```
+
+Example output shape:
+```json
+{
+  "ok": true,
+  "run_id": "1743235200000-ab12cd34",
+  "generated_at": "2026-03-29T08:00:00.000Z",
+  "trigger": "manual",
+  "portfolio": {
+    "id": "core-us",
+    "name": "Core US Equities",
+    "benchmark": "SPY"
+  },
+  "model": {
+    "id": "kimi-k2-5",
+    "provider": "moonshot",
+    "source": "cli"
+  },
+  "summary": {
+    "headline": "string",
+    "overall_view": "string",
+    "top_risks": [],
+    "top_opportunities": [],
+    "follow_ups": []
+  },
+  "holdings": [],
+  "portfolio_highlights": [],
+  "diagnostics": {
+    "duration_ms": 0,
+    "holdings_analyzed": 0,
+    "warnings": [],
+    "errors": []
+  },
+  "final_text": "string"
+}
+```
+
+### 6. Run all enabled portfolios
+
+```bash
+bun run src/index.tsx portfolio run-all --json --provider moonshot
+```
+
+### 7. Sync daily portfolio jobs
+
+```bash
+bun run src/index.tsx portfolio sync-jobs --json
+```
+
+This creates or updates portfolio-aware cron jobs using the same run path as the manual CLI.
+
+### 8. Run a synced job manually
+
+```bash
+bun run src/index.tsx portfolio run-job <job-id> --json
+```
+
+### OpenClaw Skill
+
+Dexter includes a project-local skill for this workflow at `.dexter/skills/openclaw-portfolio-harness/SKILL.md`.
+
+The skill is designed to help OpenClaw:
+- validate the portfolio registry
+- choose model/provider safely
+- run one or all portfolios
+- sync daily jobs
+- parse the JSON result contract correctly
+
+### Operational rules
+
+- Always pass `--json` for portfolio commands
+- Treat non-zero exit codes as failures
+- On failure, inspect `error.code`, `error.message`, or `diagnostics.errors`
+- For automation, parse stdout JSON instead of scraping terminal text
 
 ## 📊 How to Evaluate
 
