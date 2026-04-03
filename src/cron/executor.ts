@@ -685,6 +685,42 @@ function parseMessageText(content: unknown): string {
   return '';
 }
 
+function extractWrappedReplyBody(text: string): string {
+  const repliedMessageMatch = text.match(/Replied message \(untrusted, for context\):\s*```json\s*([\s\S]*?)\s*```/i);
+  if (!repliedMessageMatch) {
+    return '';
+  }
+
+  try {
+    const parsed = JSON.parse(repliedMessageMatch[1]) as { body?: unknown };
+    return typeof parsed.body === 'string' ? parsed.body.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+function extractWrappedUserMessage(text: string): string {
+  const directLineMatch = text.match(/\n(?:[^\n]*?)?:\s*(.+)$/s);
+  if (directLineMatch?.[1]) {
+    return directLineMatch[1].trim();
+  }
+
+  const replyBody = extractWrappedReplyBody(text);
+  if (replyBody) {
+    return replyBody;
+  }
+
+  return text.trim();
+}
+
+function normalizeTodoScanMessage(text: string): string {
+  if (text.includes('Conversation info (untrusted metadata):') || text.includes('[message_id:')) {
+    return extractWrappedUserMessage(text);
+  }
+
+  return text.trim();
+}
+
 function parseEntryTimestamp(input: unknown, fallbackMs: number): string {
   if (typeof input === 'number' && Number.isFinite(input)) {
     return new Date(input).toISOString();
@@ -859,7 +895,12 @@ function loadOpenClawConversationEntries(params: {
           continue;
         }
 
-        const text = parseMessageText(event.message.content);
+        const rawText = parseMessageText(event.message.content);
+        if (!rawText) {
+          continue;
+        }
+
+        const text = normalizeTodoScanMessage(rawText);
         if (!text) {
           continue;
         }
