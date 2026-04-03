@@ -32,11 +32,18 @@ const holdingSchema = z.object({
   notes: z.string().optional(),
 });
 
+const deliverySchema = z.object({
+  kind: z.enum(['lark', 'whatsapp']).optional(),
+  larkChatId: z.string().trim().min(1).optional(),
+  larkIdentity: z.enum(['bot', 'user']).optional(),
+});
+
 const portfolioSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   enabled: z.boolean().default(true),
   holdings: z.array(holdingSchema).min(1),
+  delivery: deliverySchema.optional(),
   benchmark: z.string().optional(),
   watchlist: z.array(z.string()).optional(),
   schedule: scheduleSchema.optional(),
@@ -139,6 +146,27 @@ export function validatePortfolioConfig(raw?: string | null): PortfolioValidatio
         },
     portfolios: parsed.data.portfolios.map((portfolio) => normalizePortfolio(portfolio)),
   };
+
+  const normalizedPortfolios = config.portfolios.map((portfolio) => {
+    const delivery = portfolio.delivery
+      ? {
+          kind: portfolio.delivery.kind ?? 'lark',
+          larkChatId: portfolio.delivery.larkChatId,
+          larkIdentity: portfolio.delivery.larkIdentity,
+        }
+      : undefined;
+
+    if (delivery?.kind === 'lark' && !delivery.larkChatId) {
+      warnings.push(`Portfolio "${portfolio.id}" has lark delivery enabled but no larkChatId set.`);
+    }
+
+    return {
+      ...portfolio,
+      delivery,
+    };
+  });
+
+  config.portfolios = normalizedPortfolios;
 
   const seen = new Set<string>();
   for (const portfolio of config.portfolios) {

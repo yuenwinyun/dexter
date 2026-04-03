@@ -1,4 +1,5 @@
 import { appendFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { runAgentForMessage } from '../gateway/agent-runner.js';
 import {
   evaluateSuppression,
@@ -36,6 +37,104 @@ const BACKOFF_SCHEDULE_MS = [
 
 const MAX_AT_RETRIES = 3;
 const SCHEDULE_ERROR_DISABLE_THRESHOLD = 3;
+
+function escapeLarkText(input: string): string {
+  return input.replace(/\r\n/g, '\n').trim();
+}
+
+function formatPortfolioDeliveryMessage(params: {
+  portfolioName: string;
+  portfolioId: string;
+  trigger: 'manual' | 'manual-job' | 'scheduled';
+  result: {
+    ok: boolean;
+    summary: {
+      headline: string;
+      overall_view: string;
+      top_risks: string[];
+      top_opportunities: string[];
+      follow_ups: string[];
+    };
+    final_text: string;
+  };
+  runId: string;
+}): string {
+  const riskItems = params.result.summary.top_risks.length
+    ? params.result.summary.top_risks.map((item) => `- ${item}`).join('\n')
+    : '- (none)';
+  const oppItems = params.result.summary.top_opportunities.length
+    ? params.result.summary.top_opportunities.map((item) => `- ${item}`).join('\n')
+    : '- (none)';
+  const followItems = params.result.summary.follow_ups.length
+    ? params.result.summary.follow_ups.map((item) => `- ${item}`).join('\n')
+    : '- (none)';
+
+  return escapeLarkText(`Portfolio update (${params.trigger})
+
+${params.portfolioName} (${params.portfolioId})
+Run: ${params.runId}
+Status: ${params.result.ok ? 'ok' : 'attention'}
+
+Headline: ${params.result.summary.headline}
+
+${params.result.summary.overall_view}
+
+Top risks:
+${riskItems}
+
+Top opportunities:
+${oppItems}
+
+Follow-ups:
+${followItems}
+
+${params.result.final_text}`);
+}
+
+function sendPortfolioMessageToLark(params: { chatId: string; text: string; identity?: 'bot' | 'user' }): Promise<void> {
+  const args = [
+    'im',
+    '+messages-send',
+    '--chat-id',
+    params.chatId,
+    '--as',
+    params.identity ?? 'bot',
+    '--text',
+    params.text,
+  ];
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('lark-cli', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+
+    child.on('error', (error) => {
+      reject(error);
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      const detail = (stdout + stderr).trim() || `lark-cli exited with code ${code}`;
+      reject(new Error(detail));
+    });
+  });
+}
 
 function getSuppressionState(jobId: string): SuppressionState {
   let state = suppressionStates.get(jobId);
@@ -133,8 +232,30 @@ export async function executeCronJob(
 
       if (!result.ok) {
         throw new Error(
-          result.diagnostics.errors.join('; ') || 'Portfolio analysis returned an unsuccessful result.',
+          result.summary.headline || result.diagnostics.errors.join('; ') || 'Portfolio analysis returned unsuccessful result.',
         );
+      }
+
+      const delivery = job.payload.delivery;
+      if (delivery?.kind === 'lark') {
+        if (!delivery.larkChatId) {
+          throw new Error('Portfolio delivery is configured for Lark but larkChatId is missing.');
+        }
+
+        const text = formatPortfolioDeliveryMessage({
+          portfolioName: portfolio.name,
+          portfolioId: portfolio.id,
+          trigger: 'scheduled',
+          result,
+          runId: result.run_id,
+        });
+
+        await sendPortfolioMessageToLark({
+          chatId: delivery.larkChatId,
+          text,
+          identity: delivery.larkIdentity,
+        });
+        debugLog(`[cron] job ${job.id}: delivered to Lark chat ${delivery.larkChatId}`);
       }
 
       job.state.lastRunAtMs = startedAt;

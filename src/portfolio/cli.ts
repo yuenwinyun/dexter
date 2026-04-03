@@ -186,6 +186,7 @@ export async function runPortfolioCommand(rawArgs: string[]): Promise<PortfolioC
               portfolioId: portfolio.id,
               model: modelConfig.model,
               modelProvider: modelConfig.provider,
+              delivery: portfolio.delivery,
             };
             existing.state.nextRunAtMs = nextRunAtMs;
             existing.updatedAtMs = Date.now();
@@ -205,6 +206,7 @@ export async function runPortfolioCommand(rawArgs: string[]): Promise<PortfolioC
                 portfolioId: portfolio.id,
                 model: modelConfig.model,
                 modelProvider: modelConfig.provider,
+                delivery: portfolio.delivery,
               },
               fulfillment: 'keep',
               state: {

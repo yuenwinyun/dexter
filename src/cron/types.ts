@@ -19,6 +19,14 @@ export type ActiveHours = {
 
 export type FulfillmentMode = 'keep' | 'once' | 'ask';
 
+export type CronDeliveryChannel = 'whatsapp' | 'lark';
+
+export type CronDelivery = {
+  kind: CronDeliveryChannel;
+  larkChatId?: string;
+  larkIdentity?: 'bot' | 'user';
+};
+
 // --- Payload ---
 
 export type CronPayload = {
@@ -27,6 +35,7 @@ export type CronPayload = {
   portfolioId?: string;
   model?: string;
   modelProvider?: string;
+  delivery?: CronDelivery;
 };
 
 // --- Job State ---

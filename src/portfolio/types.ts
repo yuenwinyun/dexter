@@ -11,6 +11,11 @@ export type PortfolioDefinition = {
   name: string;
   enabled: boolean;
   holdings: PortfolioHolding[];
+  delivery?: {
+    kind: 'lark' | 'whatsapp';
+    larkChatId?: string;
+    larkIdentity?: 'bot' | 'user';
+  };
   benchmark?: string;
   watchlist?: string[];
   schedule?: CronSchedule;
