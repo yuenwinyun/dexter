@@ -170,6 +170,154 @@ function runLarkCli(args: string[]): Promise<string> {
   });
 }
 
+function parseLarkResponse<T = unknown>(output: string): T {
+  const match = output.match(/\{[\s\S]*\}/);
+  if (!match) {
+    throw new Error(`Unable to parse lark-cli JSON response: ${output}`);
+  }
+
+  return JSON.parse(match[0]) as T;
+}
+
+function formatPortfolioDeliveryDocument(params: {
+  portfolioName: string;
+  portfolioId: string;
+  trigger: 'manual' | 'manual-job' | 'scheduled';
+  result: {
+    ok: boolean;
+    summary: {
+      headline: string;
+      overall_view: string;
+      top_risks: string[];
+      top_opportunities: string[];
+      follow_ups: string[];
+    };
+    holdings?: Array<{ ticker: string; status: string; weight?: number }>;
+    final_text: string;
+  };
+  runId: string;
+  runAt: string;
+}): string {
+  const risks = params.result.summary.top_risks.length
+    ? params.result.summary.top_risks.map((item) => `- ${item}`).join('\n')
+    : '- (none)';
+  const opportunities = params.result.summary.top_opportunities.length
+    ? params.result.summary.top_opportunities.map((item) => `- ${item}`).join('\n')
+    : '- (none)';
+  const followUps = params.result.summary.follow_ups.length
+    ? params.result.summary.follow_ups.map((item) => `- ${item}`).join('\n')
+    : '- (none)';
+
+  const holdings = (params.result.holdings ?? []).length
+    ? params.result.holdings
+      ?.map((holding) => `- ${holding.ticker}${holding.weight !== undefined ? ` (${(holding.weight * 100).toFixed(1)}%)` : ''}: ${holding.status}`)
+      .join('\n')
+    : '- (no holdings)';
+
+  return escapeLarkText(`## ${params.portfolioName}（${params.portfolioId}）\n\n` +
+    `- **Run:** ${params.runId}\n` +
+    `- **触发方式:** ${params.trigger}\n` +
+    `- **时间:** ${params.runAt}\n` +
+    `- **状态:** ${params.result.ok ? '成功' : '失败'}\n\n` +
+    `### 组合观点\n${params.result.summary.headline}\n\n` +
+    `${params.result.summary.overall_view}\n\n` +
+    `### Top risks\n${risks}\n\n` +
+    `### Top opportunities\n${opportunities}\n\n` +
+    `### Follow-ups\n${followUps}\n\n` +
+    `### 核心持仓\n${holdings}\n\n` +
+    `### 结论\n${params.result.final_text}`);
+}
+
+function formatPortfolioIndexEntry(params: {
+  docUrl?: string;
+  docId: string;
+  portfolioName: string;
+  portfolioId: string;
+  runAt: string;
+  runId: string;
+  trigger: 'manual' | 'manual-job' | 'scheduled';
+  status: '成功' | '失败';
+  headline: string;
+}): string {
+  const target = params.docUrl ? `[查看详情](${params.docUrl})` : `文档ID: ${params.docId}`;
+  return `- **${params.runAt}** | ${params.portfolioName}（${params.portfolioId}） | ${params.status}\n  - Trigger: ${params.trigger}\n  - Run: ${params.runId}\n  - Headline: ${params.headline}\n  - ${target}`;
+}
+
+function formatCreateError(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return String(err);
+}
+
+async function createLarkDocument(params: {
+  title: string;
+  markdown: string;
+  identity?: 'bot' | 'user';
+}): Promise<{ docId: string; docUrl?: string }> {
+  const identities: Array<'bot' | 'user'> = [params.identity ?? 'user'];
+  if (params.identity === 'bot') {
+    identities.push('user');
+  }
+
+  let lastError: Error | null = null;
+
+  for (const identity of identities) {
+    const args = [
+      'docs',
+      '+create',
+      '--title',
+      params.title,
+      '--markdown',
+      params.markdown,
+      '--as',
+      identity,
+    ];
+
+    try {
+      const output = await runLarkCli(args);
+      const parsed = parseLarkResponse<
+        | {
+            ok?: boolean;
+            data?: {
+              doc_id?: string;
+              doc_url?: string;
+              docUrl?: string;
+            };
+          }
+        | {
+            doc_id?: string;
+            doc_url?: string;
+            docUrl?: string;
+          }
+      >(output);
+
+      const data =
+        parsed && 'data' in parsed
+          ? parsed.data
+          : (parsed as { doc_id?: string; doc_url?: string; docUrl?: string });
+      const docId = data?.doc_id;
+      if (!docId) {
+        throw new Error(`lark-cli create response missing doc_id: ${output}`);
+      }
+
+      const docUrl = data?.doc_url ?? data?.docUrl;
+      if (identity !== (params.identity ?? 'user')) {
+        debugLog(`created portfolio doc ${docId} using fallback identity ${identity}`);
+      }
+      return { docId, docUrl };
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(formatCreateError(err));
+      if (identity === 'bot') {
+        continue;
+      }
+      break;
+    }
+  }
+
+  throw lastError ?? new Error('Failed to create Lark document.');
+}
+
 function formatPortfolioDeliveryDocEntry(params: {
   portfolioName: string;
   portfolioId: string;
@@ -188,26 +336,19 @@ function formatPortfolioDeliveryDocEntry(params: {
   runId: string;
   runAt: string;
 }): string {
-  const risks = params.result.summary.top_risks.length
-    ? params.result.summary.top_risks.map((item) => `- ${item}`).join('\n')
-    : '- (none)';
-  const opportunities = params.result.summary.top_opportunities.length
-    ? params.result.summary.top_opportunities.map((item) => `- ${item}`).join('\n')
-    : '- (none)';
-  const followUps = params.result.summary.follow_ups.length
-    ? params.result.summary.follow_ups.map((item) => `- ${item}`).join('\n')
-    : '- (none)';
-
-  return escapeLarkText(`## ${params.runAt}｜${params.portfolioName}（${params.portfolioId}）\n\n` +
-    `- **Cron Run**: ${params.runId}\n` +
-    `- **触发方式**: ${params.trigger}\n` +
-    `- **状态**: ${params.result.ok ? '成功' : '失败'}\n\n` +
-    `## 组合信号立场\n${params.result.summary.headline}\n\n` +
-    `${params.result.summary.overall_view}\n\n` +
-    `## Top risks\n${risks}\n\n` +
-    `## Top opportunities\n${opportunities}\n\n` +
-    `## Follow-ups\n${followUps}\n\n` +
-    `## 结论\n${params.result.final_text}`);
+  return formatPortfolioDeliveryDocument({
+    portfolioName: params.portfolioName,
+    portfolioId: params.portfolioId,
+    trigger: params.trigger,
+    runId: params.runId,
+    runAt: params.runAt,
+    result: {
+      ok: params.result.ok,
+      summary: params.result.summary,
+      holdings: undefined,
+      final_text: params.result.final_text,
+    },
+  });
 }
 
 async function appendPortfolioResultToLarkDoc(params: {
@@ -224,19 +365,42 @@ async function appendPortfolioResultToLarkDoc(params: {
       top_opportunities: string[];
       follow_ups: string[];
     };
+    holdings?: Array<{ ticker: string; status: string; weight?: number }>;
     final_text: string;
   };
   runId: string;
   runAt: string;
   identity?: 'bot' | 'user';
 }): Promise<void> {
-  const markdown = formatPortfolioDeliveryDocEntry({
+  const created = await createLarkDocument({
+    title: `${params.portfolioName} | ${params.runAt}`,
+    identity: params.identity,
+    markdown: formatPortfolioDeliveryDocument({
+      portfolioName: params.portfolioName,
+      portfolioId: params.portfolioId,
+      trigger: params.trigger,
+      result: {
+        ok: params.result.ok,
+        summary: params.result.summary,
+        holdings: params.result.holdings,
+        final_text: params.result.final_text,
+      },
+      runId: params.runId,
+      runAt: params.runAt,
+    }),
+  });
+  debugLog(`[cron] job create portfolio detail doc ${created.docId} for ${params.portfolioName}`);
+
+  const indexMarkdown = formatPortfolioIndexEntry({
+    docUrl: created.docUrl,
+    docId: created.docId,
     portfolioName: params.portfolioName,
     portfolioId: params.portfolioId,
-    trigger: params.trigger,
-    result: params.result,
-    runId: params.runId,
     runAt: params.runAt,
+    runId: params.runId,
+    trigger: params.trigger,
+    status: params.result.ok ? '成功' : '失败',
+    headline: params.result.summary.headline,
   });
 
   const identities: Array<'bot' | 'user'> = [params.identity ?? 'bot'];
@@ -256,7 +420,7 @@ async function appendPortfolioResultToLarkDoc(params: {
       '--mode',
       'append',
       '--markdown',
-      markdown,
+      indexMarkdown,
     ];
 
     const attemptArgs = [
