@@ -33,7 +33,7 @@ const holdingSchema = z.object({
 });
 
 const deliverySchema = z.object({
-  kind: z.enum(['lark', 'whatsapp']).optional(),
+  kind: z.enum(['lark', 'whatsapp']).default('lark'),
   larkChatId: z.string().trim().min(1).optional(),
   larkIdentity: z.enum(['bot', 'user']).optional(),
 });

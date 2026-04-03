@@ -101,13 +101,6 @@ export function resolveEffectiveModel(params: {
       );
     }
 
-    if (provider === 'codex') {
-      throw new PortfolioModelResolutionError(
-        'UNSUPPORTED_PROVIDER_FOR_PORTFOLIO_ANALYSIS',
-        'Portfolio analysis requires a tool-capable provider. Codex CLI is tool-free in Dexter.',
-      );
-    }
-
     return {
       model,
       provider,
@@ -121,10 +114,7 @@ export function resolveEffectiveModel(params: {
 export async function assertPortfolioProviderReady(config: EffectiveModelConfig): Promise<void> {
   if (config.provider === 'codex') {
     await assertCodexCliReady();
-    throw new PortfolioModelResolutionError(
-      'UNSUPPORTED_PROVIDER_FOR_PORTFOLIO_ANALYSIS',
-      'Portfolio analysis requires a tool-capable provider. Codex CLI is tool-free in Dexter.',
-    );
+    return;
   }
 
   const providerDef = getProviderById(config.provider);
