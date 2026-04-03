@@ -754,9 +754,22 @@ function shouldSkipTodoScanSession(sessionKey: string | undefined, excludedSessi
   return false;
 }
 
+function isAllowedTodoScanSession(sessionKey: string | undefined, allowedSessionKeys: Set<string>): boolean {
+  if (allowedSessionKeys.size === 0) {
+    return true;
+  }
+
+  if (!sessionKey) {
+    return false;
+  }
+
+  return allowedSessionKeys.has(sessionKey);
+}
+
 function loadOpenClawConversationEntries(params: {
   limit: number;
   openClawStateDir?: string;
+  allowSessionKeys?: string[];
   excludeSessionKeys?: string[];
   excludeMessagePatterns?: string[];
 }): ConversationEntry[] {
@@ -769,6 +782,7 @@ function loadOpenClawConversationEntries(params: {
     return [];
   }
 
+  const allowedSessionKeys = new Set(params.allowSessionKeys ?? []);
   const excludedSessionKeys = new Set(params.excludeSessionKeys ?? []);
   const messageFilters = buildTodoScanMessageFilters(params.excludeMessagePatterns);
 
@@ -803,6 +817,7 @@ function loadOpenClawConversationEntries(params: {
 
     const sessionMeta = Object.values(storePayload)
       .filter((session) => typeof session?.sessionFile === 'string')
+      .filter((session) => isAllowedTodoScanSession(session.sessionKey, allowedSessionKeys))
       .filter((session) => !shouldSkipTodoScanSession(session.sessionKey, excludedSessionKeys))
       .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 
@@ -898,6 +913,7 @@ function loadRecentConversationEntries(params: {
   limit: number;
   useOpenClawSessions?: boolean;
   openClawStateDir?: string;
+  allowSessionKeys?: string[];
   excludeSessionKeys?: string[];
   excludeMessagePatterns?: string[];
 }): ConversationEntry[] {
@@ -907,6 +923,7 @@ function loadRecentConversationEntries(params: {
     const openClawEntries = loadOpenClawConversationEntries({
       limit: params.limit,
       openClawStateDir: params.openClawStateDir,
+      allowSessionKeys: params.allowSessionKeys,
       excludeSessionKeys: params.excludeSessionKeys,
       excludeMessagePatterns: params.excludeMessagePatterns,
     });
@@ -1102,6 +1119,7 @@ export async function executeCronJob(
         limit: scanLimit,
         useOpenClawSessions: job.payload.todoScanUseOpenClawSessions,
         openClawStateDir: job.payload.todoScanOpenClawStateDir,
+        allowSessionKeys: job.payload.todoScanAllowSessionKeys,
         excludeSessionKeys: job.payload.todoScanExcludeSessionKeys,
         excludeMessagePatterns: job.payload.todoScanExcludeMessagePatterns,
       });
