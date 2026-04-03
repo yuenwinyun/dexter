@@ -36,13 +36,14 @@ function buildModelMetadata(config: EffectiveModelConfig): PortfolioAnalysisResu
   };
 }
 
-function buildPortfolioPrompt(portfolio: PortfolioDefinition): string {
+function buildPortfolioPrompt(portfolio: PortfolioDefinition, options?: { extraInstructions?: string }): string {
   const holdings = portfolio.holdings
     .map((holding) => `- ${holding.ticker}${holding.weight !== undefined ? ` (${(holding.weight * 100).toFixed(1)}%)` : ''}${holding.notes ? ` — ${holding.notes}` : ''}`)
     .join('\n');
   const watchlist = portfolio.watchlist?.length ? portfolio.watchlist.join(', ') : 'none';
   const benchmark = portfolio.benchmark ?? 'none';
   const instructions = portfolio.analysisInstructions ? `\n\nAdditional analysis instructions:\n${portfolio.analysisInstructions}` : '';
+  const qualityInstructions = options?.extraInstructions ? `\n\nQuality fix instructions:\n${options.extraInstructions}` : '';
 
   return `You are performing daily analysis for a stock portfolio.
 
@@ -87,7 +88,7 @@ Rules:
 - Keep the result compact and automation-friendly
 - Include every portfolio holding in the holdings array, even if status is "quiet"
 - If you cannot fully analyze a holding, mark status as "error" and explain why in errors
-- final_text should be a concise human-readable summary${instructions}`;
+- final_text should be a concise human-readable summary${instructions}${qualityInstructions}`;
 }
 
 function extractJsonObject(text: string): string | null {
@@ -137,6 +138,7 @@ export async function runPortfolioAnalysis(params: {
   modelConfig: EffectiveModelConfig;
   trigger: PortfolioAnalysisResult['trigger'];
   maxIterations?: number;
+  extraInstructions?: string;
 }): Promise<PortfolioAnalysisResult> {
   const startedAt = Date.now();
   const runId = `${Date.now()}-${randomBytes(4).toString('hex')}`;
@@ -148,7 +150,7 @@ export async function runPortfolioAnalysis(params: {
   try {
     answer = await runAgentForMessage({
       sessionKey: `portfolio:${params.portfolio.id}:${runId}`,
-      query: buildPortfolioPrompt(params.portfolio),
+      query: buildPortfolioPrompt(params.portfolio, { extraInstructions: params.extraInstructions }),
       model: params.modelConfig.model,
       modelProvider: params.modelConfig.provider,
       maxIterations: params.maxIterations ?? 8,

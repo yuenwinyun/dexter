@@ -21,6 +21,7 @@ export type PortfolioDefinition = {
   qualityCheck?: {
     enabled?: boolean;
     minScore?: number;
+    maxRetries?: number;
   };
   analysisInstructions?: string;
   benchmark?: string;

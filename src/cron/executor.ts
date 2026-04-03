@@ -17,6 +17,7 @@ import type { ActiveHours, CronJob, CronStore } from './types.js';
 import { loadPortfolioConfig, getPortfolioById } from '../portfolio/config.js';
 import { resolveEffectiveModel } from '../portfolio/model-resolution.js';
 import { runPortfolioAnalysis } from '../portfolio/runner.js';
+import type { PortfolioAnalysisResult } from '../portfolio/types.js';
 
 const LOG_PATH = dexterPath('gateway-debug.log');
 
@@ -292,6 +293,36 @@ function runPortfolioQualityCheck(result: {
     reasons,
     summary: reasons.length === 0 ? '质量检查通过' : `质量检查未完全通过：${reasons.join('；')}`,
   };
+}
+
+function buildQualityRewritePrompt(params: {
+  attempt: number;
+  maxAttempts: number;
+  minScore: number;
+  quality: PortfolioQualityCheckResult;
+  previousResult: PortfolioAnalysisResult;
+}): string {
+  const reasons = params.quality.reasons.length
+    ? params.quality.reasons.map((reason, index) => `${index + 1}. ${reason}`).join('\n')
+    : '未检测到明确问题';
+
+  return [
+    '上一次报告未通过文档质量检查，需要重写一版。',
+    `这是第 ${params.attempt}/${params.maxAttempts} 次修复尝试。`,
+    `最低分要求：${params.minScore}，上一次得分：${params.quality.score}。`,
+    '',
+    '请严格按原输出 JSON schema 重写，保持字段和数据结构不变。',
+    '- summary.headline 必须更明确且有投资意义',
+    '- summary.overall_view 至少要展开原因与影响（避免空洞结论）',
+    '- top_risks / top_opportunities / follow_ups 至少各 2 条并且互相不重复',
+    '- final_text 要给出更完整的结论和建议（最好 180 字以上）',
+    `上一次失败原因：\n${reasons}`,
+    '',
+    '附加要求：',
+    `- 原始 run_id: ${params.previousResult.run_id}`,
+    '- 若无法提升到合格，仅能显著提高内容完整度和可读性，不要为了凑字数堆砌空洞句子',
+    '- 输出必须是单个合法 JSON，不要附加任何解释文字',
+  ].join('\n');
 }
 
 function formatPortfolioIndexEntry(params: {
@@ -623,21 +654,53 @@ export async function executeCronJob(
         sourceOverride: 'cron',
       });
 
-      const result = await runPortfolioAnalysis({
+      let result = await runPortfolioAnalysis({
         portfolio,
         modelConfig,
         trigger: 'scheduled',
       });
 
-      const qualityCheck = runPortfolioQualityCheck(result);
-      const minScore = portfolio.qualityCheck?.minScore ?? 70;
-      if ((portfolio.qualityCheck?.enabled ?? true) && qualityCheck.score < minScore) {
-        throw new Error(`Portfolio analysis quality check failed (${qualityCheck.score}/${minScore}): ${qualityCheck.summary}`);
-      }
-
       if (!result.ok) {
         throw new Error(
           result.summary.headline || result.diagnostics.errors.join('; ') || 'Portfolio analysis returned unsuccessful result.',
+        );
+      }
+
+      const qualityEnabled = portfolio.qualityCheck?.enabled ?? true;
+      const minScore = portfolio.qualityCheck?.minScore ?? 70;
+      const maxRetries = portfolio.qualityCheck?.maxRetries ?? 1;
+
+      let qualityCheck = runPortfolioQualityCheck(result);
+      let retryCount = 0;
+      while (qualityEnabled && qualityCheck.score < minScore && retryCount < maxRetries) {
+        retryCount += 1;
+        debugLog(`[cron] job ${job.id}: quality check failed (${qualityCheck.score}/${minScore}), retrying analysis ${retryCount}/${maxRetries}`);
+
+        result = await runPortfolioAnalysis({
+          portfolio,
+          modelConfig,
+          trigger: 'scheduled',
+          extraInstructions: buildQualityRewritePrompt({
+            attempt: retryCount,
+            maxAttempts: maxRetries,
+            minScore,
+            quality: qualityCheck,
+            previousResult: result,
+          }),
+        });
+
+        if (!result.ok) {
+          throw new Error(
+            result.summary.headline || result.diagnostics.errors.join('; ') || 'Portfolio analysis returned unsuccessful result.',
+          );
+        }
+
+        qualityCheck = runPortfolioQualityCheck(result);
+      }
+
+      if (qualityEnabled && qualityCheck.score < minScore) {
+        throw new Error(
+          `Portfolio analysis quality check failed (${qualityCheck.score}/${minScore}): ${qualityCheck.summary}`,
         );
       }
 

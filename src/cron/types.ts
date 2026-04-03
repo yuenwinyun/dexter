@@ -26,6 +26,7 @@ export type CronDelivery = {
   larkChatId?: string;
   larkIdentity?: 'bot' | 'user';
   larkDocId?: string;
+  larkWikiNode?: string;
 };
 
 // --- Payload ---

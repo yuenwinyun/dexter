@@ -43,6 +43,7 @@ const deliverySchema = z.object({
 const qualityCheckSchema = z.object({
   enabled: z.boolean().optional(),
   minScore: z.number().min(0).max(100).optional(),
+  maxRetries: z.number().int().min(0).max(5).optional(),
 });
 
 const portfolioSchema = z.object({
