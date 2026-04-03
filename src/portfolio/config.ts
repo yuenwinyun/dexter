@@ -37,6 +37,12 @@ const deliverySchema = z.object({
   larkChatId: z.string().trim().min(1).optional(),
   larkIdentity: z.enum(['bot', 'user']).optional(),
   larkDocId: z.string().trim().min(1).optional(),
+  larkWikiNode: z.string().trim().min(1).optional(),
+});
+
+const qualityCheckSchema = z.object({
+  enabled: z.boolean().optional(),
+  minScore: z.number().min(0).max(100).optional(),
 });
 
 const portfolioSchema = z.object({
@@ -45,6 +51,7 @@ const portfolioSchema = z.object({
   enabled: z.boolean().default(true),
   holdings: z.array(holdingSchema).min(1),
   delivery: deliverySchema.optional(),
+  qualityCheck: qualityCheckSchema.optional(),
   benchmark: z.string().optional(),
   watchlist: z.array(z.string()).optional(),
   schedule: scheduleSchema.optional(),
@@ -156,6 +163,7 @@ export function validatePortfolioConfig(raw?: string | null): PortfolioValidatio
           larkChatId: portfolio.delivery.larkChatId,
           larkIdentity: portfolio.delivery.larkIdentity,
           larkDocId: portfolio.delivery.larkDocId,
+          larkWikiNode: portfolio.delivery.larkWikiNode,
         }
       : undefined;
 
@@ -166,6 +174,7 @@ export function validatePortfolioConfig(raw?: string | null): PortfolioValidatio
     return {
       ...portfolio,
       delivery,
+      qualityCheck: portfolio.qualityCheck,
     };
   });
 

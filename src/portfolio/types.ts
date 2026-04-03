@@ -16,6 +16,11 @@ export type PortfolioDefinition = {
     larkChatId?: string;
     larkIdentity?: 'bot' | 'user';
     larkDocId?: string;
+    larkWikiNode?: string;
+  };
+  qualityCheck?: {
+    enabled?: boolean;
+    minScore?: number;
   };
   analysisInstructions?: string;
   benchmark?: string;

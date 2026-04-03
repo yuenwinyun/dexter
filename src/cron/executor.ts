@@ -235,6 +235,65 @@ function formatPortfolioDeliveryDocument(params: {
     `### 结论\n${params.result.final_text}`);
 }
 
+type PortfolioQualityCheckResult = {
+  ok: boolean;
+  score: number;
+  reasons: string[];
+  summary: string;
+};
+
+function runPortfolioQualityCheck(result: {
+  summary: {
+    headline: string;
+    overall_view: string;
+    top_risks: string[];
+    top_opportunities: string[];
+    follow_ups: string[];
+  };
+  final_text: string;
+}): PortfolioQualityCheckResult {
+  const reasons: string[] = [];
+  let score = 100;
+
+  if (!result.summary.headline || result.summary.headline.trim().length < 20) {
+    score -= 20;
+    reasons.push('headline 太短，信息密度不够');
+  }
+
+  if (!result.summary.overall_view || result.summary.overall_view.trim().length < 120) {
+    score -= 20;
+    reasons.push('overall_view 太短，缺少展开解释');
+  }
+
+  if ((result.summary.top_risks?.length ?? 0) < 2) {
+    score -= 15;
+    reasons.push('top_risks 不足 2 条');
+  }
+
+  if ((result.summary.top_opportunities?.length ?? 0) < 2) {
+    score -= 15;
+    reasons.push('top_opportunities 不足 2 条');
+  }
+
+  if ((result.summary.follow_ups?.length ?? 0) < 2) {
+    score -= 15;
+    reasons.push('follow_ups 不足 2 条');
+  }
+
+  if (!result.final_text || result.final_text.trim().length < 180) {
+    score -= 25;
+    reasons.push('final_text 太短，结论不够稳定');
+  }
+
+  score = Math.max(0, Math.min(100, score));
+  return {
+    ok: score >= 70,
+    score,
+    reasons,
+    summary: reasons.length === 0 ? '质量检查通过' : `质量检查未完全通过：${reasons.join('；')}`,
+  };
+}
+
 function formatPortfolioIndexEntry(params: {
   docUrl?: string;
   docId: string;
@@ -261,6 +320,7 @@ async function createLarkDocument(params: {
   title: string;
   markdown: string;
   identity?: 'bot' | 'user';
+  wikiNode?: string;
 }): Promise<{ docId: string; docUrl?: string }> {
   const identities: Array<'bot' | 'user'> = [params.identity ?? 'user'];
   if (params.identity === 'bot') {
@@ -280,6 +340,10 @@ async function createLarkDocument(params: {
       '--as',
       identity,
     ];
+
+    if (params.wikiNode) {
+      args.push('--wiki-node', params.wikiNode);
+    }
 
     try {
       const output = await runLarkCli(args);
@@ -388,10 +452,12 @@ async function appendPortfolioResultToLarkDoc(params: {
   runId: string;
   runAt: string;
   identity?: 'bot' | 'user';
+  wikiNode?: string;
 }): Promise<PortfolioDetailDoc> {
   const created = await createLarkDocument({
     title: `${params.portfolioName} | ${params.runAt}`,
     identity: params.identity,
+    wikiNode: params.wikiNode,
     markdown: formatPortfolioDeliveryDocument({
       portfolioName: params.portfolioName,
       portfolioId: params.portfolioId,
@@ -563,6 +629,12 @@ export async function executeCronJob(
         trigger: 'scheduled',
       });
 
+      const qualityCheck = runPortfolioQualityCheck(result);
+      const minScore = portfolio.qualityCheck?.minScore ?? 70;
+      if ((portfolio.qualityCheck?.enabled ?? true) && qualityCheck.score < minScore) {
+        throw new Error(`Portfolio analysis quality check failed (${qualityCheck.score}/${minScore}): ${qualityCheck.summary}`);
+      }
+
       if (!result.ok) {
         throw new Error(
           result.summary.headline || result.diagnostics.errors.join('; ') || 'Portfolio analysis returned unsuccessful result.',
@@ -597,6 +669,7 @@ export async function executeCronJob(
               runId: result.run_id,
               runAt,
               identity: delivery.larkIdentity,
+              wikiNode: delivery.larkWikiNode,
             });
             debugLog(`[cron] job ${job.id}: appended to Lark doc ${delivery.larkDocId} (appended=${detailDoc.appended})`);
           } catch (appendErr) {
