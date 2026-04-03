@@ -700,12 +700,38 @@ function extractWrappedReplyBody(text: string): string {
 }
 
 function extractWrappedUserMessage(text: string): string {
-  const directLineMatch = text.match(/\n(?:[^\n]*?)?:\s*(.+)$/s);
-  if (directLineMatch?.[1]) {
-    return directLineMatch[1].trim();
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  let extractedLine = '';
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index] ?? '';
+    if (!line.includes(' : ')) {
+      continue;
+    }
+
+    const normalized = line.replace(/^\[[^\]]+\]\s*/, '').trim();
+    const match = normalized.match(/^[^:]+\s:\s*(.+)$/);
+    if (match?.[1]) {
+      extractedLine = match[1].trim();
+      break;
+    }
   }
 
   const replyBody = extractWrappedReplyBody(text);
+  if (replyBody && extractedLine) {
+    if (/^\[Replying to:/i.test(extractedLine)) {
+      return `${extractedLine}\n\nReply content:\n${replyBody}`.trim();
+    }
+    return extractedLine;
+  }
+
+  if (extractedLine) {
+    return extractedLine;
+  }
+
   if (replyBody) {
     return replyBody;
   }
