@@ -1,6 +1,8 @@
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readdirSync } from 'node:fs';
 import { existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { runAgentForMessage } from '../gateway/agent-runner.js';
 import {
   evaluateSuppression,
@@ -602,11 +604,244 @@ type TodoScanCandidate = {
   time: string;
 };
 
+type OpenClawSessionStore = {
+  sessionFile?: string;
+  updatedAt?: number;
+};
+
+type OpenClawJsonlMessage = {
+  role?: string;
+  content?: unknown;
+  timestamp?: unknown;
+};
+
+type OpenClawJsonlEntry = {
+  type?: string;
+  timestamp?: string | number;
+  id?: string;
+  message?: OpenClawJsonlMessage;
+};
+
 function getChatHistoryFilePath(): string {
   return dexterPath('messages', 'chat_history.json');
 }
 
-function loadRecentConversationEntries(limit: number): ConversationEntry[] {
+function getOpenClawStateDir(override?: string): string {
+  const envStateDir =
+    override ??
+    process.env.OPENCLAW_STATE_DIR ??
+    process.env.OPENCLAW_STATE_PATH ??
+    process.env.OPENCLAW_DIR ??
+    join(homedir(), '.openclaw');
+  return envStateDir;
+}
+
+function parseMessageText(content: unknown): string {
+  if (typeof content === 'string') {
+    return content.trim();
+  }
+
+  if (Array.isArray(content)) {
+    const chunks = content
+      .map((part) => {
+        if (typeof part === 'string') {
+          return part;
+        }
+
+        if (!part || typeof part !== 'object') {
+          return '';
+        }
+
+        const candidate = part as { text?: unknown; content?: unknown; message?: unknown };
+        if (typeof candidate.text === 'string') {
+          return candidate.text;
+        }
+
+        if (typeof candidate.content === 'string') {
+          return candidate.content;
+        }
+
+        if (typeof candidate.message === 'string') {
+          return candidate.message;
+        }
+
+        return '';
+      })
+      .filter(Boolean);
+
+    return chunks.join('\n').trim();
+  }
+
+  if (
+    content &&
+    typeof content === 'object' &&
+    'text' in content &&
+    typeof (content as { text?: unknown }).text === 'string'
+  ) {
+    return ((content as { text: string }).text ?? '').trim();
+  }
+
+  return '';
+}
+
+function parseEntryTimestamp(input: unknown, fallbackMs: number): string {
+  if (typeof input === 'number' && Number.isFinite(input)) {
+    return new Date(input).toISOString();
+  }
+
+  if (typeof input === 'string') {
+    const ts = Date.parse(input);
+    if (Number.isFinite(ts)) {
+      return new Date(ts).toISOString();
+    }
+  }
+
+  return new Date(fallbackMs).toISOString();
+}
+
+function loadOpenClawConversationEntries(limit: number, openClawStateDir?: string): ConversationEntry[] {
+  if (limit <= 0) {
+    return [];
+  }
+
+  const sessionsPath = join(getOpenClawStateDir(openClawStateDir), 'agents');
+  if (!existsSync(sessionsPath)) {
+    return [];
+  }
+
+  let agentDirs: string[];
+  try {
+    agentDirs = readdirSync(sessionsPath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(sessionsPath, entry.name));
+  } catch {
+    return [];
+  }
+
+  if (agentDirs.length === 0) {
+    return [];
+  }
+
+  const rawEntries: { entry: ConversationEntry; timestampMs: number; order: number }[] = [];
+  let order = 0;
+
+  for (const agentDir of agentDirs) {
+    const storePath = join(agentDir, 'sessions', 'sessions.json');
+    if (!existsSync(storePath)) {
+      continue;
+    }
+
+    let storePayload: Record<string, OpenClawSessionStore>;
+    try {
+      storePayload = JSON.parse(readFileSync(storePath, 'utf8')) as Record<string, OpenClawSessionStore>;
+    } catch {
+      continue;
+    }
+
+    const sessionMeta = Object.values(storePayload)
+      .filter((session) => typeof session?.sessionFile === 'string')
+      .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+
+    for (const meta of sessionMeta) {
+      const sessionFile = meta.sessionFile;
+      if (!sessionFile || !existsSync(sessionFile)) {
+        continue;
+      }
+
+      let sessionLog: string;
+      try {
+        sessionLog = readFileSync(sessionFile, 'utf8');
+      } catch {
+        continue;
+      }
+
+      let pendingUser: ConversationEntry | null = null;
+      const fallbackMs = Date.parse(parseEntryTimestamp(meta.updatedAt, Date.now()));
+      const fallbackTimestamp = Number.isFinite(fallbackMs) ? fallbackMs : Date.now();
+
+      for (const line of sessionLog.split('\n')) {
+        if (!line.trim()) {
+          continue;
+        }
+
+        let event: OpenClawJsonlEntry;
+        try {
+          event = JSON.parse(line) as OpenClawJsonlEntry;
+        } catch {
+          continue;
+        }
+
+        if (event.type !== 'message' || !event.message) {
+          continue;
+        }
+
+        const role = event.message.role;
+        if (role !== 'user' && role !== 'assistant') {
+          continue;
+        }
+
+        const text = parseMessageText(event.message.content);
+        if (!text) {
+          continue;
+        }
+
+        const ts = parseEntryTimestamp(event.timestamp ?? event.message.timestamp, fallbackTimestamp);
+
+        if (role === 'user') {
+          pendingUser = {
+            id: event.id ?? `openclaw:${order}`,
+            timestamp: ts,
+            userMessage: text,
+            agentResponse: null,
+          };
+          continue;
+        }
+
+        if (role === 'assistant' && pendingUser) {
+          rawEntries.push({
+            entry: {
+              ...pendingUser,
+              agentResponse: text,
+            },
+            timestampMs: Date.parse(pendingUser.timestamp),
+            order,
+          });
+          order += 1;
+          pendingUser = null;
+        }
+      }
+    }
+  }
+
+  const ordered = rawEntries
+    .sort((a, b) => {
+      if (b.timestampMs !== a.timestampMs) {
+        return b.timestampMs - a.timestampMs;
+      }
+      return b.order - a.order;
+    })
+    .slice(0, limit)
+    .map((item) => item.entry);
+
+  return ordered;
+}
+
+function loadRecentConversationEntries(params: {
+  limit: number;
+  useOpenClawSessions?: boolean;
+  openClawStateDir?: string;
+}): ConversationEntry[] {
+  const useOpenClawSessions = params.useOpenClawSessions ?? true;
+
+  if (useOpenClawSessions) {
+    const openClawEntries = loadOpenClawConversationEntries(params.limit, params.openClawStateDir);
+    if (openClawEntries.length > 0) {
+      return openClawEntries;
+    }
+
+    debugLog('[todo_scan] no OpenClaw session history found, falling back to local chat_history.json');
+  }
+
   const filePath = getChatHistoryFilePath();
   if (!existsSync(filePath)) {
     return [];
@@ -614,7 +849,7 @@ function loadRecentConversationEntries(limit: number): ConversationEntry[] {
 
   try {
     const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as { messages?: ConversationEntry[] };
-    return (parsed.messages ?? []).slice(0, limit);
+    return (parsed.messages ?? []).slice(0, params.limit);
   } catch {
     return [];
   }
@@ -788,7 +1023,11 @@ export async function executeCronJob(
       }
 
       const scanLimit = job.payload.sessionScanLimit ?? 25;
-      const entries = loadRecentConversationEntries(scanLimit);
+      const entries = loadRecentConversationEntries({
+        limit: scanLimit,
+        useOpenClawSessions: job.payload.todoScanUseOpenClawSessions,
+        openClawStateDir: job.payload.todoScanOpenClawStateDir,
+      });
       if (entries.length === 0) {
         debugLog(`[cron] job ${job.id}: no recent conversation entries for todo_scan`);
         scheduleNextRun(job, store);

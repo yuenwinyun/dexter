@@ -42,6 +42,8 @@ export type CronPayload = {
   supabaseServiceKey?: string;
   todoAppName?: string;
   sessionScanLimit?: number;
+  todoScanUseOpenClawSessions?: boolean;
+  todoScanOpenClawStateDir?: string;
 };
 
 // --- Job State ---
