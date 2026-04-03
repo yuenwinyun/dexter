@@ -1,4 +1,5 @@
 import { appendFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { runAgentForMessage } from '../gateway/agent-runner.js';
 import {
@@ -18,6 +19,7 @@ import { loadPortfolioConfig, getPortfolioById } from '../portfolio/config.js';
 import { resolveEffectiveModel } from '../portfolio/model-resolution.js';
 import { runPortfolioAnalysis } from '../portfolio/runner.js';
 import type { PortfolioAnalysisResult } from '../portfolio/types.js';
+import type { ConversationEntry } from '../utils/long-term-chat-history.js';
 
 const LOG_PATH = dexterPath('gateway-debug.log');
 
@@ -593,6 +595,126 @@ function getSuppressionState(jobId: string): SuppressionState {
   return state;
 }
 
+type TodoScanCandidate = {
+  title: string;
+  notes: string;
+  status: 'todo';
+  time: string;
+};
+
+function getChatHistoryFilePath(): string {
+  return dexterPath('messages', 'chat_history.json');
+}
+
+function loadRecentConversationEntries(limit: number): ConversationEntry[] {
+  const filePath = getChatHistoryFilePath();
+  if (!existsSync(filePath)) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as { messages?: ConversationEntry[] };
+    return (parsed.messages ?? []).slice(0, limit);
+  } catch {
+    return [];
+  }
+}
+
+function buildTodoScanPrompt(entries: ConversationEntry[]): string {
+  const transcript = entries
+    .map((entry, index) => {
+      const agentResponse = entry.agentResponse ? `Assistant: ${entry.agentResponse}` : 'Assistant: (no response)';
+      return [
+        `Entry ${index + 1}`,
+        `Timestamp: ${entry.timestamp}`,
+        `User: ${entry.userMessage}`,
+        agentResponse,
+      ].join('\n');
+    })
+    .join('\n\n');
+
+  return [
+    'You are extracting todos from recent conversations.',
+    'Return JSON only in this exact shape:',
+    '{"todos":[{"title":"...","notes":"...","status":"todo","time":""}]}',
+    '',
+    'Rules:',
+    '- Only include explicit, actionable asks from the user.',
+    '- Skip things already clearly done.',
+    '- Skip vague wishes with no action.',
+    '- status must always be "todo".',
+    '- time should be empty string unless the user explicitly mentioned a time.',
+    '- Deduplicate very similar asks into one todo.',
+    '- Keep titles short and concrete.',
+    '',
+    transcript || 'No recent entries.',
+  ].join('\n');
+}
+
+function normalizeTodoTitle(title: string): string {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+async function fetchExistingTodos(params: { supabaseUrl: string; serviceKey: string }): Promise<Array<{ title: string; status: string }>> {
+  const response = await fetch(`${params.supabaseUrl}/rest/v1/todos?select=title,status`, {
+    headers: {
+      apikey: params.serviceKey,
+      Authorization: `Bearer ${params.serviceKey}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed fetching existing todos: ${await response.text()}`);
+  }
+
+  return (await response.json()) as Array<{ title: string; status: string }>;
+}
+
+async function insertTodos(params: { supabaseUrl: string; serviceKey: string; todos: TodoScanCandidate[] }): Promise<number> {
+  if (params.todos.length === 0) {
+    return 0;
+  }
+
+  const response = await fetch(`${params.supabaseUrl}/rest/v1/todos`, {
+    method: 'POST',
+    headers: {
+      apikey: params.serviceKey,
+      Authorization: `Bearer ${params.serviceKey}`,
+      'Content-Type': 'application/json',
+      Prefer: 'return=representation',
+    },
+    body: JSON.stringify(params.todos),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed inserting todos: ${await response.text()}`);
+  }
+
+  const inserted = await response.json();
+  return Array.isArray(inserted) ? inserted.length : 0;
+}
+
+function extractTodosFromAgentAnswer(answer: string): TodoScanCandidate[] {
+  const match = answer.match(/\{[\s\S]*\}/);
+  if (!match) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(match[0]) as { todos?: TodoScanCandidate[] };
+    return (parsed.todos ?? [])
+      .filter((todo) => todo && typeof todo.title === 'string' && todo.title.trim().length > 0)
+      .map((todo) => ({
+        title: todo.title.trim(),
+        notes: typeof todo.notes === 'string' ? todo.notes.trim() : '',
+        status: 'todo',
+        time: typeof todo.time === 'string' ? todo.time.trim() : '',
+      }));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Check if the current time is within configured active hours and days.
  */
@@ -656,6 +778,71 @@ export async function executeCronJob(
   }
 
   debugLog(`[cron] executing job "${job.name}" (${job.id})`);
+
+  if (job.payload.kind === 'todo_scan') {
+    try {
+      const supabaseUrl = job.payload.supabaseUrl ?? process.env.TODO_SCAN_SUPABASE_URL;
+      const supabaseServiceKey = job.payload.supabaseServiceKey ?? process.env.TODO_SCAN_SUPABASE_SERVICE_KEY;
+      if (!supabaseUrl || !supabaseServiceKey) {
+        throw new Error('todo_scan requires supabaseUrl and supabaseServiceKey.');
+      }
+
+      const scanLimit = job.payload.sessionScanLimit ?? 25;
+      const entries = loadRecentConversationEntries(scanLimit);
+      if (entries.length === 0) {
+        debugLog(`[cron] job ${job.id}: no recent conversation entries for todo_scan`);
+        scheduleNextRun(job, store);
+        return;
+      }
+
+      const model = job.payload.model ?? (getSetting('modelId', 'gpt-5.4') as string);
+      const modelProvider = job.payload.modelProvider ?? (getSetting('provider', 'openai') as string);
+      const answer = await runAgentForMessage({
+        sessionKey: `cron:${job.id}:todo_scan`,
+        query: buildTodoScanPrompt(entries),
+        model,
+        modelProvider,
+        maxIterations: 4,
+        isolatedSession: true,
+        channel: 'whatsapp',
+      });
+
+      const candidates = extractTodosFromAgentAnswer(answer);
+      const existingTodos = await fetchExistingTodos({ supabaseUrl, serviceKey: supabaseServiceKey });
+      const existingOpenTitles = new Set(
+        existingTodos
+          .filter((todo) => todo.status !== 'done')
+          .map((todo) => normalizeTodoTitle(todo.title)),
+      );
+
+      const dedupedCandidates = candidates.filter((todo, index, arr) => {
+        const normalized = normalizeTodoTitle(todo.title);
+        if (!normalized || existingOpenTitles.has(normalized)) {
+          return false;
+        }
+        return arr.findIndex((item) => normalizeTodoTitle(item.title) === normalized) === index;
+      });
+
+      const insertedCount = await insertTodos({
+        supabaseUrl,
+        serviceKey: supabaseServiceKey,
+        todos: dedupedCandidates,
+      });
+
+      debugLog(`[cron] job ${job.id}: todo_scan inserted ${insertedCount} todos from ${entries.length} entries`);
+
+      job.state.lastRunAtMs = startedAt;
+      job.state.lastDurationMs = Date.now() - startedAt;
+      job.state.consecutiveErrors = 0;
+      job.state.lastRunStatus = 'ok';
+      job.state.lastError = undefined;
+      scheduleNextRun(job, store);
+      return;
+    } catch (err) {
+      handleJobError(job, store, err, startedAt);
+      return;
+    }
+  }
 
   if (job.payload.kind === 'portfolio' && job.payload.portfolioId) {
     try {

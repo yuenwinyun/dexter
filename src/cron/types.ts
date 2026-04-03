@@ -32,12 +32,16 @@ export type CronDelivery = {
 // --- Payload ---
 
 export type CronPayload = {
-  kind?: 'message' | 'portfolio';
+  kind?: 'message' | 'portfolio' | 'todo_scan';
   message?: string;
   portfolioId?: string;
   model?: string;
   modelProvider?: string;
   delivery?: CronDelivery;
+  supabaseUrl?: string;
+  supabaseServiceKey?: string;
+  todoAppName?: string;
+  sessionScanLimit?: number;
 };
 
 // --- Job State ---
