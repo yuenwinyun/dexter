@@ -218,7 +218,20 @@ function formatPortfolioDeliveryDocument(params: {
 
   const holdings = (params.result.holdings ?? []).length
     ? params.result.holdings
-      ?.map((holding) => `- ${holding.ticker}${holding.weight !== undefined ? ` (${(holding.weight * 100).toFixed(1)}%)` : ''}: ${holding.status}`)
+      ?.map((holding) => {
+        const label = `${holding.ticker}${holding.weight !== undefined ? ` (${(holding.weight * 100).toFixed(1)}%)` : ''}`;
+        const commentary = holding.highlights?.find((item) => item && item.trim().length > 0)
+          ?? holding.news?.find((item) => item && item.trim().length > 0)
+          ?? holding.events?.find((item) => item && item.trim().length > 0)
+          ?? (holding.status === 'error'
+            ? (holding.errors?.find((item) => item && item.trim().length > 0)
+              ? `信息待补充（${holding.errors.find((item) => item && item.trim().length > 0)}）`
+              : '信息待补充')
+            : holding.status === 'notable'
+              ? '有需重点关注的变化'
+              : '暂无明显新增事项');
+        return `- ${label}: ${commentary}`;
+      })
       .join('\n')
     : '- (no holdings)';
 
