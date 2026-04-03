@@ -58,6 +58,7 @@ function formatPortfolioDeliveryMessage(params: {
     final_text: string;
   };
   runId: string;
+  detailDocUrl?: string;
 }): string {
   const riskItems = params.result.summary.top_risks.length
     ? params.result.summary.top_risks.map((item) => `- ${item}`).join('\n')
@@ -69,7 +70,7 @@ function formatPortfolioDeliveryMessage(params: {
     ? params.result.summary.follow_ups.map((item) => `- ${item}`).join('\n')
     : '- (none)';
 
-  return escapeLarkText(`Portfolio update (${params.trigger})
+  const baseMessage = escapeLarkText(`Portfolio update (${params.trigger})
 
 ${params.portfolioName} (${params.portfolioId})
 Run: ${params.runId}
@@ -89,6 +90,12 @@ Follow-ups:
 ${followItems}
 
 ${params.result.final_text}`);
+
+  const docLine = params.detailDocUrl
+    ? `\n\n详情报告: ${params.detailDocUrl}`
+    : '';
+
+  return `${baseMessage}${docLine}`;
 }
 
 function sendPortfolioMessageToLark(params: { chatId: string; text: string; identity?: 'bot' | 'user' }): Promise<void> {
@@ -240,7 +247,7 @@ function formatPortfolioIndexEntry(params: {
   headline: string;
 }): string {
   const target = params.docUrl ? `[查看详情](${params.docUrl})` : `文档ID: ${params.docId}`;
-  return `- **${params.runAt}** | ${params.portfolioName}（${params.portfolioId}） | ${params.status}\n  - Trigger: ${params.trigger}\n  - Run: ${params.runId}\n  - Headline: ${params.headline}\n  - ${target}`;
+  return `- **${params.runAt}**｜${params.portfolioName}（${params.portfolioId}）｜${params.status}\n  - 触发方式: ${params.trigger}\n  - Run: ${params.runId}\n  - 摘要: ${params.headline}\n  - ${target}`;
 }
 
 function formatCreateError(err: unknown): string {
@@ -351,6 +358,16 @@ function formatPortfolioDeliveryDocEntry(params: {
   });
 }
 
+type PortfolioDetailDoc = {
+  docId: string;
+  docUrl?: string;
+  appended: boolean;
+};
+
+function toLarkWebDocUrl(docId: string): string {
+  return `https://www.larksuite.com/docx/${docId}`;
+}
+
 async function appendPortfolioResultToLarkDoc(params: {
   docId: string;
   portfolioName: string;
@@ -371,7 +388,7 @@ async function appendPortfolioResultToLarkDoc(params: {
   runId: string;
   runAt: string;
   identity?: 'bot' | 'user';
-}): Promise<void> {
+}): Promise<PortfolioDetailDoc> {
   const created = await createLarkDocument({
     title: `${params.portfolioName} | ${params.runAt}`,
     identity: params.identity,
@@ -392,7 +409,7 @@ async function appendPortfolioResultToLarkDoc(params: {
   debugLog(`[cron] job create portfolio detail doc ${created.docId} for ${params.portfolioName}`);
 
   const indexMarkdown = formatPortfolioIndexEntry({
-    docUrl: created.docUrl,
+    docUrl: created.docUrl ?? toLarkWebDocUrl(created.docId),
     docId: created.docId,
     portfolioName: params.portfolioName,
     portfolioId: params.portfolioId,
@@ -409,6 +426,7 @@ async function appendPortfolioResultToLarkDoc(params: {
   }
 
   let lastError: Error | null = null;
+  let appended = false;
   for (const identity of identities) {
     const args = [
       'docs',
@@ -432,7 +450,8 @@ async function appendPortfolioResultToLarkDoc(params: {
       if (identity !== (params.identity ?? 'bot')) {
         debugLog(`[cron] job append fallback succeeded using Lark identity "${identity}"`);
       }
-      return;
+      appended = true;
+      return { ...created, appended };
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       if (identity === (params.identity ?? 'bot')) {
@@ -443,8 +462,11 @@ async function appendPortfolioResultToLarkDoc(params: {
   }
 
   if (lastError) {
-    throw lastError;
+    debugLog(`[cron] job append failed after attempts while adding to index doc ${params.docId}: ${lastError.message}`);
+    return { ...created, appended: false };
   }
+
+  return { ...created, appended };
 }
 
 function getSuppressionState(jobId: string): SuppressionState {
@@ -563,24 +585,10 @@ export async function executeCronJob(
           second: '2-digit',
         });
 
-        const text = formatPortfolioDeliveryMessage({
-          portfolioName: portfolio.name,
-          portfolioId: portfolio.id,
-          trigger: 'scheduled',
-          result,
-          runId: result.run_id,
-        });
-
-        await sendPortfolioMessageToLark({
-          chatId: delivery.larkChatId,
-          text,
-          identity: delivery.larkIdentity,
-        });
-        debugLog(`[cron] job ${job.id}: delivered to Lark chat ${delivery.larkChatId}`);
-
+        let detailDoc: PortfolioDetailDoc | undefined;
         if (delivery.larkDocId) {
           try {
-            await appendPortfolioResultToLarkDoc({
+            detailDoc = await appendPortfolioResultToLarkDoc({
               docId: delivery.larkDocId,
               portfolioName: portfolio.name,
               portfolioId: portfolio.id,
@@ -590,12 +598,28 @@ export async function executeCronJob(
               runAt,
               identity: delivery.larkIdentity,
             });
-            debugLog(`[cron] job ${job.id}: appended to Lark doc ${delivery.larkDocId}`);
+            debugLog(`[cron] job ${job.id}: appended to Lark doc ${delivery.larkDocId} (appended=${detailDoc.appended})`);
           } catch (appendErr) {
             const appendError = appendErr instanceof Error ? appendErr.message : String(appendErr);
             debugLog(`[cron] job ${job.id}: failed to append Lark doc ${delivery.larkDocId}: ${appendError}`);
           }
         }
+
+        const text = formatPortfolioDeliveryMessage({
+          portfolioName: portfolio.name,
+          portfolioId: portfolio.id,
+          trigger: 'scheduled',
+          result,
+          runId: result.run_id,
+          detailDocUrl: detailDoc?.docUrl ?? (detailDoc?.docId ? toLarkWebDocUrl(detailDoc.docId) : undefined),
+        });
+
+        await sendPortfolioMessageToLark({
+          chatId: delivery.larkChatId,
+          text,
+          identity: delivery.larkIdentity,
+        });
+        debugLog(`[cron] job ${job.id}: delivered to Lark chat ${delivery.larkChatId}`);
       }
 
       job.state.lastRunAtMs = startedAt;
