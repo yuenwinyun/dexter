@@ -605,6 +605,7 @@ type TodoScanCandidate = {
 };
 
 type OpenClawSessionStore = {
+  sessionKey?: string;
   sessionFile?: string;
   updatedAt?: number;
 };
@@ -699,15 +700,77 @@ function parseEntryTimestamp(input: unknown, fallbackMs: number): string {
   return new Date(fallbackMs).toISOString();
 }
 
-function loadOpenClawConversationEntries(limit: number, openClawStateDir?: string): ConversationEntry[] {
-  if (limit <= 0) {
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildTodoScanMessageFilters(patterns?: string[]): RegExp[] {
+  const defaults = [
+    'Conversation info (untrusted metadata):',
+    'Sender (untrusted metadata):',
+    'Replied message (untrusted, for context):',
+    'Chat history since last reply (untrusted, for context):',
+    '[message_id:',
+    'HEARTBEAT_OK',
+    'NO_REPLY',
+  ];
+
+  return [...defaults, ...(patterns ?? [])]
+    .map((pattern) => pattern.trim())
+    .filter(Boolean)
+    .map((pattern) => new RegExp(escapeRegExp(pattern), 'i'));
+}
+
+function shouldSkipTodoScanMessage(text: string, filters: RegExp[]): boolean {
+  const normalized = text.trim();
+  if (!normalized) {
+    return true;
+  }
+
+  return filters.some((filter) => filter.test(normalized));
+}
+
+function shouldSkipTodoScanSession(sessionKey: string | undefined, excludedSessionKeys: Set<string>): boolean {
+  if (!sessionKey) {
+    return false;
+  }
+
+  if (excludedSessionKeys.has(sessionKey)) {
+    return true;
+  }
+
+  if (sessionKey === 'agent:main:main') {
+    return true;
+  }
+
+  if (sessionKey.startsWith('agent:codex:acp:')) {
+    return true;
+  }
+
+  if (sessionKey.startsWith('cron:')) {
+    return true;
+  }
+
+  return false;
+}
+
+function loadOpenClawConversationEntries(params: {
+  limit: number;
+  openClawStateDir?: string;
+  excludeSessionKeys?: string[];
+  excludeMessagePatterns?: string[];
+}): ConversationEntry[] {
+  if (params.limit <= 0) {
     return [];
   }
 
-  const sessionsPath = join(getOpenClawStateDir(openClawStateDir), 'agents');
+  const sessionsPath = join(getOpenClawStateDir(params.openClawStateDir), 'agents');
   if (!existsSync(sessionsPath)) {
     return [];
   }
+
+  const excludedSessionKeys = new Set(params.excludeSessionKeys ?? []);
+  const messageFilters = buildTodoScanMessageFilters(params.excludeMessagePatterns);
 
   let agentDirs: string[];
   try {
@@ -740,6 +803,7 @@ function loadOpenClawConversationEntries(limit: number, openClawStateDir?: strin
 
     const sessionMeta = Object.values(storePayload)
       .filter((session) => typeof session?.sessionFile === 'string')
+      .filter((session) => !shouldSkipTodoScanSession(session.sessionKey, excludedSessionKeys))
       .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 
     for (const meta of sessionMeta) {
@@ -785,6 +849,10 @@ function loadOpenClawConversationEntries(limit: number, openClawStateDir?: strin
           continue;
         }
 
+        if (shouldSkipTodoScanMessage(text, messageFilters)) {
+          continue;
+        }
+
         const ts = parseEntryTimestamp(event.timestamp ?? event.message.timestamp, fallbackTimestamp);
 
         if (role === 'user') {
@@ -820,7 +888,7 @@ function loadOpenClawConversationEntries(limit: number, openClawStateDir?: strin
       }
       return b.order - a.order;
     })
-    .slice(0, limit)
+    .slice(0, params.limit)
     .map((item) => item.entry);
 
   return ordered;
@@ -830,11 +898,18 @@ function loadRecentConversationEntries(params: {
   limit: number;
   useOpenClawSessions?: boolean;
   openClawStateDir?: string;
+  excludeSessionKeys?: string[];
+  excludeMessagePatterns?: string[];
 }): ConversationEntry[] {
   const useOpenClawSessions = params.useOpenClawSessions ?? true;
 
   if (useOpenClawSessions) {
-    const openClawEntries = loadOpenClawConversationEntries(params.limit, params.openClawStateDir);
+    const openClawEntries = loadOpenClawConversationEntries({
+      limit: params.limit,
+      openClawStateDir: params.openClawStateDir,
+      excludeSessionKeys: params.excludeSessionKeys,
+      excludeMessagePatterns: params.excludeMessagePatterns,
+    });
     if (openClawEntries.length > 0) {
       return openClawEntries;
     }
@@ -1027,6 +1102,8 @@ export async function executeCronJob(
         limit: scanLimit,
         useOpenClawSessions: job.payload.todoScanUseOpenClawSessions,
         openClawStateDir: job.payload.todoScanOpenClawStateDir,
+        excludeSessionKeys: job.payload.todoScanExcludeSessionKeys,
+        excludeMessagePatterns: job.payload.todoScanExcludeMessagePatterns,
       });
       if (entries.length === 0) {
         debugLog(`[cron] job ${job.id}: no recent conversation entries for todo_scan`);

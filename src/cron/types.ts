@@ -44,6 +44,8 @@ export type CronPayload = {
   sessionScanLimit?: number;
   todoScanUseOpenClawSessions?: boolean;
   todoScanOpenClawStateDir?: string;
+  todoScanExcludeSessionKeys?: string[];
+  todoScanExcludeMessagePatterns?: string[];
 };
 
 // --- Job State ---
