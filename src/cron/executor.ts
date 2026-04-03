@@ -216,6 +216,7 @@ function formatPortfolioDeliveryDocument(params: {
     ? params.result.summary.follow_ups.map((item) => `- ${item}`).join('\n')
     : '- (none)';
 
+  const errorHoldings = (params.result.holdings ?? []).filter((holding) => holding.status === 'error');
   const holdings = (params.result.holdings ?? []).length
     ? params.result.holdings
       ?.map((holding) => {
@@ -234,6 +235,9 @@ function formatPortfolioDeliveryDocument(params: {
       })
       .join('\n')
     : '- (no holdings)';
+  const limitationSummary = errorHoldings.length >= Math.max(2, Math.ceil(((params.result.holdings ?? []).length || 0) * 0.4))
+    ? `\n\n### 信息限制说明\n- 本次有 ${errorHoldings.length}/${(params.result.holdings ?? []).length} 个持仓未完成完整当日核查\n- 这通常意味着工具/数据可用性不足，而不是这些持仓本身出现异常\n- 今日事件级判断应降级为结构性判断，避免把“无法核查”误读成“明确利空”`
+    : '';
 
   return escapeLarkText(`## ${params.portfolioName}（${params.portfolioId}）\n\n` +
     `- **Run:** ${params.runId}\n` +
@@ -245,7 +249,8 @@ function formatPortfolioDeliveryDocument(params: {
     `### Top risks\n${risks}\n\n` +
     `### Top opportunities\n${opportunities}\n\n` +
     `### Follow-ups\n${followUps}\n\n` +
-    `### 核心持仓\n${holdings}\n\n` +
+    `### 核心持仓\n${holdings}` +
+    `${limitationSummary}\n\n` +
     `### 结论\n${params.result.final_text}`);
 }
 
