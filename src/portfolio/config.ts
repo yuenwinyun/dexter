@@ -36,6 +36,7 @@ const deliverySchema = z.object({
   kind: z.enum(['lark', 'whatsapp']).default('lark'),
   larkChatId: z.string().trim().min(1).optional(),
   larkIdentity: z.enum(['bot', 'user']).optional(),
+  larkDocId: z.string().trim().min(1).optional(),
 });
 
 const portfolioSchema = z.object({
@@ -49,6 +50,7 @@ const portfolioSchema = z.object({
   schedule: scheduleSchema.optional(),
   model: z.string().optional(),
   modelProvider: z.string().optional(),
+  analysisInstructions: z.string().trim().optional(),
 });
 
 const portfolioConfigSchema = z.object({
@@ -153,6 +155,7 @@ export function validatePortfolioConfig(raw?: string | null): PortfolioValidatio
           kind: portfolio.delivery.kind ?? 'lark',
           larkChatId: portfolio.delivery.larkChatId,
           larkIdentity: portfolio.delivery.larkIdentity,
+          larkDocId: portfolio.delivery.larkDocId,
         }
       : undefined;
 

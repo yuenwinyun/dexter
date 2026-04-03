@@ -42,6 +42,7 @@ function buildPortfolioPrompt(portfolio: PortfolioDefinition): string {
     .join('\n');
   const watchlist = portfolio.watchlist?.length ? portfolio.watchlist.join(', ') : 'none';
   const benchmark = portfolio.benchmark ?? 'none';
+  const instructions = portfolio.analysisInstructions ? `\n\nAdditional analysis instructions:\n${portfolio.analysisInstructions}` : '';
 
   return `You are performing daily analysis for a stock portfolio.
 
@@ -86,7 +87,7 @@ Rules:
 - Keep the result compact and automation-friendly
 - Include every portfolio holding in the holdings array, even if status is "quiet"
 - If you cannot fully analyze a holding, mark status as "error" and explain why in errors
-- final_text should be a concise human-readable summary`;
+- final_text should be a concise human-readable summary${instructions}`;
 }
 
 function extractJsonObject(text: string): string | null {

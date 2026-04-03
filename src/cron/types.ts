@@ -25,6 +25,7 @@ export type CronDelivery = {
   kind: CronDeliveryChannel;
   larkChatId?: string;
   larkIdentity?: 'bot' | 'user';
+  larkDocId?: string;
 };
 
 // --- Payload ---

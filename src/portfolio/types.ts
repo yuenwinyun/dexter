@@ -15,7 +15,9 @@ export type PortfolioDefinition = {
     kind: 'lark' | 'whatsapp';
     larkChatId?: string;
     larkIdentity?: 'bot' | 'user';
+    larkDocId?: string;
   };
+  analysisInstructions?: string;
   benchmark?: string;
   watchlist?: string[];
   schedule?: CronSchedule;
