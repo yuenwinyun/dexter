@@ -705,25 +705,21 @@ function extractWrappedUserMessage(text: string): string {
     .map((line) => line.trim())
     .filter(Boolean);
 
-  let extractedLine = '';
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index] ?? '';
-    if (!line.includes(' : ')) {
-      continue;
-    }
-
+  const messageLine = [...lines].reverse().find((line) => {
     const normalized = line.replace(/^\[[^\]]+\]\s*/, '').trim();
-    const match = normalized.match(/^[^:]+\s:\s*(.+)$/);
-    if (match?.[1]) {
-      extractedLine = match[1].trim();
-      break;
-    }
-  }
+    return /^([^:]+)\s:\s*(.+)$/.test(normalized);
+  });
 
   const replyBody = extractWrappedReplyBody(text);
+  const extractedLine = messageLine
+    ? messageLine.replace(/^\[[^\]]+\]\s*/, '').trim().replace(/^[^:]+\s:\s*/, '').trim()
+    : '';
+
   if (replyBody && extractedLine) {
     if (/^\[Replying to:/i.test(extractedLine)) {
-      return `${extractedLine}\n\nReply content:\n${replyBody}`.trim();
+      const replyText = replyBody.trim();
+      // Preserve both the reply target stub and the replied content, since the ask may be in either place.
+      return `${extractedLine}\n\nReply content:\n${replyText}`.trim();
     }
     return extractedLine;
   }
