@@ -21,6 +21,7 @@ import {
   noteGroupMember,
   formatGroupMembersList,
 } from './group/index.js';
+import { captureWhatsAppMessageToDerivedEvents } from './derived-events.js';
 import type { GroupContext } from '../agent/prompts.js';
 import { appendFileSync } from 'node:fs';
 import { dexterPath } from '../utils/paths.js';
@@ -47,6 +48,8 @@ async function handleInbound(cfg: GatewayConfig, inbound: WhatsAppInboundMessage
   console.log(`Inbound message ${inbound.from} (${inbound.chatType}, ${inbound.body.length} chars): "${bodyPreview}"`);
   debugLog(`[gateway] handleInbound from=${inbound.from} isGroup=${isGroup} body="${inbound.body.slice(0, 30)}..."`);
 
+  let wasMentioned = !isGroup;
+
   // --- Group-specific: track member, check mention gating ---
   if (isGroup) {
     noteGroupMember(inbound.chatId, inbound.senderId, inbound.senderName);
@@ -71,6 +74,9 @@ async function handleInbound(cfg: GatewayConfig, inbound: WhatsAppInboundMessage
       debugLog(`[gateway] group message buffered (no mention), skipping reply`);
       return;
     }
+
+    // Keep in-memory state for message content in this inbound flow.
+    wasMentioned = true;
   }
 
   // --- Routing: use chatId for groups (group JID), senderId for DMs ---
@@ -117,6 +123,14 @@ async function handleInbound(cfg: GatewayConfig, inbound: WhatsAppInboundMessage
   };
 
   try {
+    void captureWhatsAppMessageToDerivedEvents({
+      inbound,
+      sessionKey: route.sessionKey,
+      messageText: inbound.body,
+      wasMentioned,
+      logger: (msg) => debugLog(`[gateway] derived-events: ${msg}`),
+    });
+
     // Defense-in-depth: verify outbound destination is allowed before any messaging
     // For groups, use chatId (the group JID); for DMs, use replyToJid
     const outboundTarget = isGroup ? inbound.chatId : inbound.replyToJid;
@@ -230,4 +244,3 @@ export async function startGateway(params: { configPath?: string } = {}): Promis
     snapshot: () => manager.getSnapshot(),
   };
 }
-
